@@ -1,109 +1,78 @@
+// frontend/src/pages/ChatPage.jsx
+
 import { useEffect, useState } from "react";
-import { useParams } from "react-router";
-import useAuthUser from "../hooks/useAuthUser";
-import { useQuery } from "@tanstack/react-query";
-import { getStreamToken } from "../lib/api";
-
-import {
-  Channel,
-  ChannelHeader,
-  Chat,
-  MessageInput,
-  MessageList,
-  Thread,
-  Window,
-} from "stream-chat-react";
-import { StreamChat } from "stream-chat";
+import { useParams } from "react-router-dom";
+import { useQueryClient } from "@tanstack/react-query";
+import { Channel, ChannelHeader, Chat, MessageInput, MessageList, Thread, Window } from "stream-chat-react";
 import toast from "react-hot-toast";
-
 import ChatLoader from "../components/ChatLoader";
 import CallButton from "../components/CallButton";
-
-const STREAM_API_KEY = import.meta.env.VITE_STREAM_API_KEY;
+import { useSocketContext } from "../context/SocketContext.jsx";
+import useAuthUser from "../hooks/useAuthUser.js";
 
 const ChatPage = () => {
   const { id: targetUserId } = useParams();
-
-  const [chatClient, setChatClient] = useState(null);
-  const [channel, setChannel] = useState(null);
-  const [loading, setLoading] = useState(true);
-
   const { authUser } = useAuthUser();
-
-  const { data: tokenData } = useQuery({
-    queryKey: ["streamToken"],
-    queryFn: getStreamToken,
-    enabled: !!authUser, // this will run only when authUser is available
-  });
+  const { chatClient, socket } = useSocketContext(); // Lấy cả socket từ context
+  const queryClient = useQueryClient();
+  const [channel, setChannel] = useState(null);
 
   useEffect(() => {
-    const initChat = async () => {
-      if (!tokenData?.token || !authUser) return;
+    // Sử dụng chat client đã có, không tạo kết nối mới
+    const initChannel = async () => {
+      if (!chatClient || !authUser) return;
 
       try {
-        console.log("Initializing stream chat client...");
-
-        const client = StreamChat.getInstance(STREAM_API_KEY);
-
-        await client.connectUser(
-          {
-            id: authUser._id,
-            name: authUser.fullName,
-            image: authUser.profilePic,
-          },
-          tokenData.token
-        );
-
-        //
         const channelId = [authUser._id, targetUserId].sort().join("-");
-
-        // you and me
-        // if i start the chat => channelId: [myId, yourId]
-        // if you start the chat => channelId: [yourId, myId]  => [myId,yourId]
-
-        const currChannel = client.channel("messaging", channelId, {
+        const currChannel = chatClient.channel("messaging", channelId, {
           members: [authUser._id, targetUserId],
         });
 
+        // Đánh dấu đã đọc khi vào channel và cập nhật lại số thông báo
         await currChannel.watch();
-
-        setChatClient(client);
         setChannel(currChannel);
+        queryClient.invalidateQueries({ queryKey: ["unreadChannels"] });
+
       } catch (error) {
-        console.error("Error initializing chat:", error);
-        toast.error("Could not connect to chat. Please try again.");
-      } finally {
-        setLoading(false);
+        console.error("Error initializing channel:", error);
+        toast.error("Could not open chat. Please try again.");
       }
     };
 
-    initChat();
-  }, [tokenData, authUser, targetUserId]);
+    initChannel();
+    
+  }, [chatClient, authUser, targetUserId, queryClient]);
 
   const handleVideoCall = () => {
     if (channel) {
       const callUrl = `${window.location.origin}/call/${channel.id}`;
-
-      channel.sendMessage({
-        text: `I've started a video call. Join me here: ${callUrl}`,
-      });
-
+      channel.sendMessage({ text: `I've started a video call. Join me here: ${callUrl}` });
       toast.success("Video call link sent successfully!");
     }
   };
 
-  if (loading || !chatClient || !channel) return <ChatLoader />;
+  // FIX: Ghi đè hành vi gửi tin nhắn để gửi thêm sự kiện socket
+  const overrideSendMessage = async (channelId, message) => {
+    if (socket) {
+      // Gửi sự kiện đến backend của chúng ta để nó thông báo cho người nhận
+      socket.emit("sendMessage", { recipientId: targetUserId });
+    }
+    // Thực hiện hành động gửi tin nhắn mặc định của Stream
+    return channel.sendMessage(message);
+  }
+
+  if (!chatClient || !channel) return <ChatLoader />;
 
   return (
-    <div className="h-[93vh]">
+    <div className="h-full">
       <Chat client={chatClient}>
         <Channel channel={channel}>
-          <div className="w-full relative">
+          <div className="w-full relative h-full">
             <CallButton handleVideoCall={handleVideoCall} />
             <Window>
               <ChannelHeader />
               <MessageList />
-              <MessageInput focus />
+              <MessageInput focus doSendMessage={overrideSendMessage} />
             </Window>
           </div>
           <Thread />

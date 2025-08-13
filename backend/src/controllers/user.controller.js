@@ -1,5 +1,6 @@
 import User from "../models/User.js";
 import FriendRequest from "../models/FriendRequest.js";
+import { io, userSocketMap } from "../server.js";
 
 export async function getRecommendedUsers(req, res) {
   try {
@@ -72,6 +73,15 @@ export async function sendFriendRequest(req, res) {
       recipient: recipientId,
     });
 
+     // --- GỬI SỰ KIỆN REAL-TIME ---
+    const recipientSocketId = userSocketMap[recipientId];
+    if (recipientSocketId) {
+      // Gửi sự kiện đến đúng người nhận
+      io.to(recipientSocketId).emit("newFriendRequest");
+      
+    }
+    // ----------------------------
+
     res.status(201).json(friendRequest);
   } catch (error) {
     console.error("Error in sendFriendRequest controller", error.message);
@@ -106,6 +116,18 @@ export async function acceptFriendRequest(req, res) {
     await User.findByIdAndUpdate(friendRequest.recipient, {
       $addToSet: { friends: friendRequest.sender },
     });
+
+    const senderSocketId = userSocketMap[friendRequest.sender.toString()];
+    if (senderSocketId) {
+      // Gửi sự kiện cho người đã gửi yêu cầu, kèm theo thông tin của người vừa chấp nhận
+      io.to(senderSocketId).emit("friendRequestAccepted", {
+        newFriend: {
+            _id: req.user._id,
+            fullName: req.user.fullName,
+            profilePic: req.user.profilePic,
+        }
+      });
+    }
 
     res.status(200).json({ message: "Friend request accepted" });
   } catch (error) {
